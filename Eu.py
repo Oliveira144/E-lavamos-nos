@@ -1,175 +1,168 @@
 import streamlit as st
-from collections import Counter
-import statistics
-
-st.set_page_config("Football Studio AI PRO", layout="wide")
 
 # ===============================
-# ESTADO GLOBAL
+# CONFIG
+# ===============================
+st.set_page_config(page_title="Football Studio PRO IA", layout="wide")
+
+# ===============================
+# SESSION STATE
 # ===============================
 if "history" not in st.session_state:
     st.session_state.history = []
 
-if "bankroll" not in st.session_state:
-    st.session_state.bankroll = 1000.0
-
-if "profit" not in st.session_state:
-    st.session_state.profit = 0.0
+if "cycle_memory" not in st.session_state:
+    st.session_state.cycle_memory = []
 
 # ===============================
-# INPUT
+# UTILS
 # ===============================
-def add_result(r):
-    st.session_state.history.append(r)
-    if len(st.session_state.history) > 500:
-        st.session_state.history.pop(0)
-
-# ===============================
-# FUNÇÕES DE PADRÃO
-# ===============================
-def streak(hist):
-    c = 1
-    for i in range(len(hist)-1,0,-1):
-        if hist[i]==hist[i-1]: c+=1
-        else: break
-    return c
-
-def zigzag(hist):
-    z=0
-    for i in range(len(hist)-1,1,-1):
-        if hist[i]!=hist[i-1]: z+=1
-        else: break
-    return z
-
-def draw_gap(hist):
-    for i in range(len(hist)-1,-1,-1):
-        if hist[i]=="D":
-            return len(hist)-1-i
-    return len(hist)
-
-def cluster(hist):
+def extract_blocks(hist):
+    if not hist:
+        return []
     blocks=[]
     c=1
     for i in range(1,len(hist)):
-        if hist[i]==hist[i-1]: c+=1
+        if hist[i]==hist[i-1]:
+            c+=1
         else:
-            blocks.append(c)
+            blocks.append((hist[i-1],c))
             c=1
-    blocks.append(c)
-    return statistics.mean(blocks[-6:]) if len(blocks)>=6 else 0
+    blocks.append((hist[-1],c))
+    return blocks
 
 # ===============================
-# IA CENTRAL
+# CICLOS
 # ===============================
-def analyze(hist):
-    if len(hist)<30:
-        return {"action":"NÃO APOSTAR","score":0}
+def detect_cycle(blocks):
+    if not blocks:
+        return None
 
-    last20=hist[-20:]
-    last100=hist[-100:] if len(hist)>=100 else hist
+    size = blocks[-1][1]
 
-    c20=Counter(last20)
-    c100=Counter(last100)
+    if size >= 4:
+        return "STREAK"
 
+    if len(blocks) >= 4:
+        sizes = [b[1] for b in blocks[-4:]]
+        if sizes == [1,1,1,1]:
+            return "ALTERNÂNCIA"
+
+    if len(blocks) >= 4:
+        if [b[1] for b in blocks[-4:]] == [4,4,3,2]:
+            return "DECAIMENTO"
+
+    if len(blocks) >= 6:
+        if [b[1] for b in blocks[-6:]] == [4,4,3,2,3,2]:
+            return "ESTRUTURAL"
+
+    return "CHOPPY"
+
+def update_cycle_memory(blocks):
+    cycle = detect_cycle(blocks)
+    if not cycle:
+        return
+
+    if not st.session_state.cycle_memory or st.session_state.cycle_memory[-1] != cycle:
+        st.session_state.cycle_memory.append(cycle)
+
+    if len(st.session_state.cycle_memory) > 3:
+        st.session_state.cycle_memory.pop(0)
+
+# ===============================
+# PADRÕES
+# ===============================
+def detect_patterns(hist):
     signals=[]
+    blocks=extract_blocks(hist)
+    if len(hist) < 6:
+        return signals
 
-    # 1 TREND
-    for cor in ["R","B"]:
-        p=c20[cor]/20*100
-        if p>=60:
-            signals.append((cor,p,"TREND"))
+    sizes=[b[1] for b in blocks]
 
-    # 2 ANTI STREAK
-    s=streak(hist)
-    if s>=4:
-        signals.append(("B" if hist[-1]=="R" else "R",65+s*3,"ANTI-STREAK"))
+    # STREAK
+    if blocks[-1][1] >= 3:
+        signals.append((blocks[-1][0], 54, "STREAK"))
 
-    # 3 ZIGZAG
-    zz=zigzag(hist)
-    if zz>=3:
-        signals.append((hist[-2],55+zz*4,"ZIG-ZAG"))
+    # DUPLO CURTO
+    if len(sizes)>=2 and sizes[-1]==2 and sizes[-2]==2:
+        signals.append((blocks[-1][0], 55, "DUPLO CURTO"))
 
-    # 4 CLUSTER
-    cl=cluster(last20)
-    if 3<=cl<=4.5:
-        signals.append((hist[-1],60,"CLUSTER"))
+    # 1x1x1
+    if sizes[-3:] == [1,1,1]:
+        signals.append((blocks[-1][0], 56, "1x1x1"))
 
-    # 5 DRAW GAP
-    dg=draw_gap(hist)
-    if dg>=50:
-        signals.append(("D",70+dg//2,"DRAW GAP"))
+    # DECAIMENTO
+    if len(sizes)>=4 and sizes[-4:] == [4,4,3,2]:
+        signals.append((blocks[-1][0], 56, "DECAIMENTO"))
 
-    # 6 MEAN REVERSION
-    diff=abs(c100["R"]-c100["B"])
-    if diff>=20:
-        weaker="R" if c100["R"]<c100["B"] else "B"
-        signals.append((weaker,60+diff,"REVERSION"))
+    # PADRÃO AVANÇADO
+    if len(sizes)>=8 and sizes[-8:] == [4,4,3,2,3,2,1,2]:
+        signals.append((blocks[-2][0], 59, "ESTRUTURAL AVANÇADO"))
 
-    # 7 COLAPSO
-    if len(signals)>=3:
-        best=max(signals,key=lambda x:x[1])
-        return {
-            "action":"NÃO APOSTAR",
-            "score":best[1],
-            "reason":"COLAPSO / ARMADILHA"
-        }
+    return signals
+
+# ===============================
+# IA FINAL COM MEMÓRIA
+# ===============================
+def ia_decision(hist):
+    blocks = extract_blocks(hist)
+    update_cycle_memory(blocks)
+
+    signals = detect_patterns(hist)
 
     if not signals:
-        return {"action":"NÃO APOSTAR","score":0,"reason":"MESA CHOPPY"}
+        return "AGUARDAR", 0, "SEM PADRÃO"
 
-    best=max(signals,key=lambda x:x[1])
+    best = max(signals, key=lambda x: x[1])
+    score = best[1]
 
-    return {
-        "action":"APOSTAR",
-        "color":best[0],
-        "score":round(best[1]),
-        "reason":best[2]
-    }
+    # 🔴 MEMÓRIA DE 3 CICLOS
+    memory = st.session_state.cycle_memory
 
-# ===============================
-# GESTÃO DE BANCA
-# ===============================
-def stake(score):
-    if score>=80: return st.session_state.bankroll*0.05
-    if score>=70: return st.session_state.bankroll*0.03
-    if score>=60: return st.session_state.bankroll*0.02
-    return 0
+    if memory.count("CHOPPY") >= 2:
+        score -= 10
 
-# ===============================
-# INTERFACE
-# ===============================
-st.title("🤖 Football Studio – AI ENGINE PRO")
+    if len(memory) == 3 and memory[0] == memory[2]:
+        score += 5  # repetição estrutural
 
-c1,c2=st.columns([1,2])
-
-with c1:
-    st.subheader("🎮 Entrada")
-    if st.button("🔴 Home"): add_result("R")
-    if st.button("🔵 Away"): add_result("B")
-    if st.button("⚪ Draw"): add_result("D")
-
-    st.metric("Banca",f"R$ {st.session_state.bankroll:.2f}")
-    st.metric("Lucro",f"R$ {st.session_state.profit:.2f}")
-
-with c2:
-    st.subheader("📊 Histórico (Recente → Antigo)")
-    st.write(" ".join(
-        ["🔴" if x=="R" else "🔵" if x=="B" else "⚪"
-         for x in reversed(st.session_state.history[-60:])]
-    ))
-
-    r=analyze(st.session_state.history)
-
-    st.markdown("## 🎯 DECISÃO DA IA")
-
-    if r["action"]=="NÃO APOSTAR":
-        st.error(f"NÃO APOSTAR | {r.get('reason','')}")
+    if score >= 55:
+        return f"APOSTAR {'🔴' if best[0]=='R' else '🔵'}", score, f"{best[2]} | CICLOS {memory}"
     else:
-        s=stake(r["score"])
-        cor="🔴" if r["color"]=="R" else "🔵" if r["color"]=="B" else "⚪"
-        st.success(
-            f"APOSTAR {cor} | "
-            f"Score: {r['score']} | "
-            f"Stake: R$ {s:.2f} | "
-            f"Padrão: {r['reason']}"
-        )
+        return "AGUARDAR", score, f"{best[2]} | CICLOS {memory}"
+
+# ===============================
+# UI
+# ===============================
+st.title("🎮 Football Studio PRO IA – Memória de Ciclos")
+
+col1,col2,col3 = st.columns(3)
+
+with col1:
+    if st.button("🔴 Vermelho"):
+        st.session_state.history.insert(0,"R")
+    if st.button("🔵 Azul"):
+        st.session_state.history.insert(0,"B")
+    if st.button("⚪ Empate"):
+        st.session_state.history.insert(0,"D")
+
+with col2:
+    st.subheader("🧠 Memória de 3 Ciclos")
+    st.write(st.session_state.cycle_memory)
+
+with col3:
+    st.subheader("📊 Histórico (Recente → Antigo)")
+    st.write(" ".join("🔴" if h=="R" else "🔵" if h=="B" else "⚪" for h in st.session_state.history[:30]))
+
+# ===============================
+# DECISÃO
+# ===============================
+decision, score, info = ia_decision(st.session_state.history)
+
+st.divider()
+st.subheader("🎯 DECISÃO DA IA")
+
+if "APOSTAR" in decision:
+    st.success(f"{decision} | Score {score} | {info}")
+else:
+    st.warning(f"{decision} | Score {score} | {info}")
